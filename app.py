@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# app.py - Private Group Copier (Python 3.14 Compatible)
-# CAT Shadow Hacker
+# app.py - Private Group Copier (Session String Auto-Login)
+# CAT Shadow Hacker - No OTP, No Phone Number
 
 import os
 import asyncio
@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from flask import Flask
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 from telethon.tl.types import (
     MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage,
@@ -28,6 +29,9 @@ SOURCE_CHAT = int(os.environ.get("SOURCE_CHAT", -1003801298314))
 DEST_CHAT = int(os.environ.get("DEST_CHAT", -1003882932953))
 DELAY = float(os.environ.get("DELAY", 1.5))
 
+# 🔑 Session String
+SESSION_STRING = "1BVtsOHoBu5FHvTd_gQBWx_41G-zbF_5Xc8iUCgphoZHz0PuzvL_HiS4mGJwK_8_QeUivqGJV7ghLyTNIW5FICnttX8aWdY8K3MF2NLza708E5SliPbWfZG3e0kMScesvRz8c1c2Mxl7JQDFY-baOFG5bF-zEU4PfaGOErtTdm-iMD_3LSwQbyqeP3HguPKy7WvtA-5F9Ycz82hM0kd2GsTdQfFD236D11einxiRIApq29qzVT8Lxiec3bKD9h2oyNhAGh4FcLwAGCVmnHmQ2WFMYgT97TGZAXSYncThQXhPibxv8p_eV1Go5WwFaHmaM9avj-BKBrp9qHhlvyBX0tAFTW6DgeG0="
+
 # ============================================================
 # SETUP LOGGING
 # ============================================================
@@ -46,7 +50,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Bot is running!"
+    return "✅ Bot is running! (Session String Mode)"
 
 @app.route('/health')
 def health():
@@ -58,7 +62,8 @@ def health():
 
 class Forwarder:
     def __init__(self):
-        self.client = TelegramClient("render_session", API_ID, API_HASH)
+        logger.info("🔑 Initializing with Session String...")
+        self.client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
         self.source = SOURCE_CHAT
         self.dest = DEST_CHAT
         self.delay = DELAY
@@ -185,7 +190,7 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Dice)")
                 return True
             
-            # --- MEDIA (Photo, Video, Document, Voice, Sticker) ---
+            # --- MEDIA ---
             if msg.media:
                 logger.info(f"📥 Downloading media: {msg.id}")
                 path = await self.download_media_with_retry(msg)
@@ -233,6 +238,8 @@ class Forwarder:
             return False
     
     async def run(self):
+        # 🔑 Session String se start — NO OTP, NO PHONE
+        logger.info("🔑 Authenticating with Session String...")
         await self.client.start()
         
         logger.info("=" * 60)
@@ -286,7 +293,10 @@ def run_bot():
     loop.run_until_complete(forwarder.run())
 
 if __name__ == "__main__":
+    logger.info("🔑 Session String loaded successfully!")
+    logger.info("🚀 Bot will start without phone/OTP")
+    
     thread = threading.Thread(target=run_bot, daemon=True)
     thread.start()
-    logger.info("🚀 Bot started in background")
+    logger.info("🚀 Bot started in background (Session String Mode)")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
