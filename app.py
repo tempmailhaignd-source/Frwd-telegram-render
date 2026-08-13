@@ -17,8 +17,7 @@ from telethon.tl.types import (
     MessageMediaPoll, MessageMediaContact, MessageMediaGeo,
     MessageMediaVenue, MessageMediaDice, MessageMediaGame,
     DocumentAttributeVideo, DocumentAttributeAudio,
-    DocumentAttributeFilename, DocumentAttributeSticker,
-    MessageMediaAudio, MessageMediaVoice
+    DocumentAttributeFilename, DocumentAttributeSticker
 )
 
 # ============================================================
@@ -116,73 +115,42 @@ class Forwarder:
             return msg.text
         if hasattr(msg, 'message') and msg.message:
             return msg.message
-        if msg.media and hasattr(msg.media, 'caption'):
-            return msg.media.caption
         return ""
-    
-    def get_file_name(self, msg):
-        """Extract filename from media"""
-        if not msg.media or not isinstance(msg.media, MessageMediaDocument):
-            return None
-        doc = msg.media.document
-        if doc:
-            for attr in doc.attributes:
-                if isinstance(attr, DocumentAttributeFilename):
-                    return attr.file_name
-        return None
     
     async def copy_media_group(self, messages):
         """Copy album/media group together"""
         try:
-            # Group messages by media group ID
-            groups = {}
+            media_files = []
             for msg in messages:
-                if msg.grouped_id:
-                    if msg.grouped_id not in groups:
-                        groups[msg.grouped_id] = []
-                    groups[msg.grouped_id].append(msg)
-                else:
-                    # Single media
-                    await self.copy_message(msg)
+                path = await self.download_media_with_retry(msg)
+                if path:
+                    media_files.append(path)
             
-            # Process each group
-            for group_id, group_msgs in groups.items():
-                try:
-                    # Download all media in group
-                    media_files = []
-                    for msg in group_msgs:
-                        path = await self.download_media_with_retry(msg)
-                        if path:
-                            media_files.append(path)
-                    
-                    if media_files:
-                        # Send as album
-                        caption = self.get_caption(group_msgs[0])
-                        await self.client.send_file(
-                            self.dest,
-                            media_files,
-                            caption=caption,
-                            supports_streaming=True,
-                            force_document=False
-                        )
-                        
-                        # Clean up
-                        for path in media_files:
-                            try:
-                                os.remove(path)
-                            except:
-                                pass
-                        
-                        # Update progress for all messages in group
-                        for msg in group_msgs:
-                            self.copied += 1
-                            self.last_id = msg.id
-                            self.save_progress(msg.id)
-                            logger.info(f"✅ {self.copied}: {msg.id} (Media Group)")
-                except Exception as e:
-                    logger.error(f"❌ Group {group_id} failed: {e}")
+            if media_files:
+                caption = self.get_caption(messages[0])
+                await self.client.send_file(
+                    self.dest,
+                    media_files,
+                    caption=caption,
+                    supports_streaming=True,
+                    force_document=False
+                )
+                
+                # Clean up
+                for path in media_files:
+                    try:
+                        os.remove(path)
+                    except:
+                        pass
+                
+                # Update progress
+                for msg in messages:
+                    self.copied += 1
+                    self.last_id = msg.id
+                    self.save_progress(msg.id)
+                    logger.info(f"✅ {self.copied}: {msg.id} (Media Group)")
         except Exception as e:
-            logger.error(f"❌ Media group processing error: {e}")
+            logger.error(f"❌ Media group failed: {e}")
     
     async def copy_message(self, msg):
         """Copy a single message - ALL TYPES"""
@@ -275,12 +243,11 @@ class Forwarder:
             
             # --- 8. MEDIA (Photo, Video, Document, Voice, Sticker, Audio) ---
             if msg.media:
-                # Check if it's a sticker
+                # Detect media type
                 is_sticker = False
                 is_voice = False
                 is_audio = False
                 is_video = False
-                mime_type = None
                 
                 if isinstance(msg.media, MessageMediaDocument):
                     doc = msg.media.document
@@ -292,10 +259,8 @@ class Forwarder:
                                 is_audio = True
                             elif isinstance(attr, DocumentAttributeVideo):
                                 is_video = True
-                        if doc.mime_type:
-                            mime_type = doc.mime_type
-                            if 'voice' in mime_type:
-                                is_voice = True
+                        if doc.mime_type and 'voice' in doc.mime_type:
+                            is_voice = True
                 
                 logger.info(f"📥 Downloading media: {msg.id}")
                 path = await self.download_media_with_retry(msg)
@@ -312,7 +277,7 @@ class Forwarder:
                         path,
                         caption=caption,
                         supports_streaming=True,
-                        force_document=is_sticker,  # Stickers as document
+                        force_document=is_sticker,
                         voice_note=is_voice,
                         video_note=is_video,
                         reply_to=msg.reply_to_msg_id if msg.is_reply else None
@@ -335,7 +300,7 @@ class Forwarder:
                     return False
             
             # --- 9. UNKNOWN ---
-            logger.warning(f"⚠️ Unknown message type: {msg.id} ({type(msg.media)})")
+            logger.warning(f"⚠️ Unknown message type: {msg.id}")
             self.skipped += 1
             return False
             
@@ -389,7 +354,6 @@ class Forwarder:
                     
                     # Check for media group
                     if msg.grouped_id:
-                        # Collect all messages in group
                         group_msgs = []
                         while i < len(messages) and messages[i].grouped_id == msg.grouped_id:
                             if messages[i].id > self.last_id:
@@ -399,7 +363,6 @@ class Forwarder:
                         if group_msgs:
                             await self.copy_media_group(group_msgs)
                     else:
-                        # Single message
                         await self.copy_message(msg)
                         i += 1
                     
