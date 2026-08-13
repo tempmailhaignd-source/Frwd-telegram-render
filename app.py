@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# app.py - Private Group Copier with Session String
+# app.py - Complete Private Group Copier (All Media + Filenames)
 # CAT Shadow Hacker - 100% Working on Render
 
 import os
@@ -10,6 +10,11 @@ from flask import Flask
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
+from telethon.tl.types import (
+    MessageMediaPhoto, MessageMediaDocument,
+    DocumentAttributeFilename, DocumentAttributeVideo,
+    DocumentAttributeAudio, DocumentAttributeSticker
+)
 
 # ============================================================
 # CONFIG
@@ -21,7 +26,7 @@ SOURCE = -1003801298314
 DEST = -1003882932953
 DELAY = 2.5
 
-# 🔑 Session String (Render Environment Variable se load)
+# 🔑 Session String
 SESSION_STRING = "1BVtsOHoBu5FHvTd_gQBWx_41G-zbF_5Xc8iUCgphoZHz0PuzvL_HiS4mGJwK_8_QeUivqGJV7ghLyTNIW5FICnttX8aWdY8K3MF2NLza708E5SliPbWfZG3e0kMScesvRz8c1c2Mxl7JQDFY-baOFG5bF-zEU4PfaGOErtTdm-iMD_3LSwQbyqeP3HguPKy7WvtA-5F9Ycz82hM0kd2GsTdQfFD236D11einxiRIApq29qzVT8Lxiec3bKD9h2oyNhAGh4FcLwAGCVmnHmQ2WFMYgT97TGZAXSYncThQXhPibxv8p_eV1Go5WwFaHmaM9avj-BKBrp9qHhlvyBX0tAFTW6DgeG0="
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s')
@@ -35,7 +40,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Bot is running! (Session String Mode)"
+    return "✅ Bot is running! (All Media + Filenames)"
 
 @app.route('/health')
 def health():
@@ -46,7 +51,6 @@ def health():
 # ============================================================
 
 async def run_copier():
-    # 🔑 Session String se client initialize
     logger.info("🔑 Initializing with Session String...")
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.start()
@@ -68,24 +72,95 @@ async def run_copier():
                 await asyncio.sleep(60)
                 continue
             
+            logger.info(f"📦 Processing {len(messages)} messages...")
+            
             for msg in messages:
                 try:
-                    if msg.media:
-                        # Download and send
-                        path = await client.download_media(msg, file=str(download_folder / f"{msg.id}.tmp"))
-                        if path and os.path.exists(path):
-                            await client.send_file(DEST, path, caption=msg.text or "", supports_streaming=True)
-                            os.remove(path)
-                        else:
-                            logger.warning(f"⚠️ Download failed: {msg.id}")
-                            continue
-                    else:
-                        # Just text
+                    # --- TEXT MESSAGE ---
+                    if not msg.media:
                         await client.send_message(DEST, msg.text or "")
+                        copied += 1
+                        logger.info(f"✅ {copied}: {msg.id} (Text)")
+                        await asyncio.sleep(DELAY)
+                        continue
                     
-                    copied += 1
-                    logger.info(f"✅ {copied}: {msg.id}")
-                    await asyncio.sleep(DELAY)
+                    # --- PHOTO ---
+                    if isinstance(msg.media, MessageMediaPhoto):
+                        logger.info(f"📸 Downloading photo: {msg.id}")
+                        path = await client.download_media(msg, file=str(download_folder / f"photo_{msg.id}.jpg"))
+                        if path and os.path.exists(path):
+                            caption = msg.text or ""
+                            await client.send_file(DEST, path, caption=caption)
+                            os.remove(path)
+                            copied += 1
+                            logger.info(f"✅ {copied}: {msg.id} (Photo)")
+                        else:
+                            logger.warning(f"⚠️ Photo download failed: {msg.id}")
+                        await asyncio.sleep(DELAY)
+                        continue
+                    
+                    # --- DOCUMENT / VIDEO / AUDIO / STICKER ---
+                    if isinstance(msg.media, MessageMediaDocument):
+                        doc = msg.media.document
+                        if not doc:
+                            continue
+                        
+                        # Get filename
+                        filename = None
+                        for attr in doc.attributes:
+                            if isinstance(attr, DocumentAttributeFilename):
+                                filename = attr.file_name
+                                break
+                        
+                        if not filename:
+                            # Generate filename based on type
+                            if doc.mime_type:
+                                ext = doc.mime_type.split('/')[-1]
+                                if 'video' in doc.mime_type:
+                                    filename = f"video_{msg.id}.{ext}"
+                                elif 'audio' in doc.mime_type:
+                                    filename = f"audio_{msg.id}.{ext}"
+                                elif 'image' in doc.mime_type:
+                                    filename = f"image_{msg.id}.{ext}"
+                                else:
+                                    filename = f"file_{msg.id}.{ext}"
+                            else:
+                                filename = f"file_{msg.id}.bin"
+                        
+                        logger.info(f"📥 Downloading: {filename} ({msg.id})")
+                        path = await client.download_media(msg, file=str(download_folder / filename))
+                        
+                        if path and os.path.exists(path):
+                            caption = msg.text or ""
+                            await client.send_file(
+                                DEST,
+                                path,
+                                caption=caption,
+                                supports_streaming=True,
+                                force_document=False
+                            )
+                            os.remove(path)
+                            copied += 1
+                            logger.info(f"✅ {copied}: {msg.id} ({filename})")
+                        else:
+                            logger.warning(f"⚠️ Download failed: {msg.id} ({filename})")
+                        await asyncio.sleep(DELAY)
+                        continue
+                    
+                    # --- OTHER MEDIA (Fallback) ---
+                    if msg.media:
+                        logger.info(f"📥 Downloading media: {msg.id}")
+                        path = await client.download_media(msg, file=str(download_folder / f"media_{msg.id}.bin"))
+                        if path and os.path.exists(path):
+                            caption = msg.text or ""
+                            await client.send_file(DEST, path, caption=caption)
+                            os.remove(path)
+                            copied += 1
+                            logger.info(f"✅ {copied}: {msg.id} (Media)")
+                        else:
+                            logger.warning(f"⚠️ Media download failed: {msg.id}")
+                        await asyncio.sleep(DELAY)
+                        continue
                     
                 except FloodWaitError as e:
                     logger.warning(f"⏳ Flood wait {e.seconds}s")
@@ -93,7 +168,8 @@ async def run_copier():
                 except Exception as e:
                     logger.error(f"❌ {msg.id}: {e}")
             
-            offset = messages[-1].id
+            if messages:
+                offset = messages[-1].id
             
         except Exception as e:
             logger.error(f"❌ Batch error: {e}")
@@ -109,7 +185,6 @@ if __name__ == "__main__":
     logger.info("🔑 Session String loaded successfully!")
     logger.info("🚀 Bot will start without phone/OTP")
     
-    # Bot ko background thread mein chalao
     def start_bot():
         asyncio.run(run_copier())
     
@@ -117,5 +192,4 @@ if __name__ == "__main__":
     thread.start()
     logger.info("🚀 Bot started in background")
     
-    # Flask server (Render health check ke liye)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
