@@ -84,7 +84,6 @@ class Forwarder:
             f.write(str(msg_id))
     
     async def download_media_with_retry(self, msg, max_retries=3):
-        """Download media with retry"""
         for attempt in range(max_retries):
             try:
                 path = await self.client.download_media(
@@ -111,7 +110,6 @@ class Forwarder:
         return ""
     
     async def copy_message(self, msg):
-        """Copy message - all types"""
         try:
             # --- TEXT ---
             if not msg.media:
