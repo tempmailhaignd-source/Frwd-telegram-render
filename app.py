@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-# app.py - Telegram Private Group Copier (Download + Re-upload)
-# Supports: Text, Photo, Video, Document, Voice, Sticker, Poll, Reply, Media Groups
-# CAT Shadow Hacker - 100% Complete
+# app.py - Private Group Copier (Python 3.14 Compatible)
+# CAT Shadow Hacker
 
 import os
 import asyncio
 import threading
 import logging
-import shutil
 from pathlib import Path
 from flask import Flask
 from telethon import TelegramClient
@@ -41,21 +39,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# FLASK APP (Render Health Check)
+# FLASK APP
 # ============================================================
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Bot is running! Forwarding all message types."
+    return "✅ Bot is running!"
 
 @app.route('/health')
 def health():
     return "OK"
 
 # ============================================================
-# FORWARDER CLASS - COMPLETE
+# FORWARDER CLASS
 # ============================================================
 
 class Forwarder:
@@ -67,7 +65,6 @@ class Forwarder:
         self.copied = 0
         self.skipped = 0
         self.errors = 0
-        self.media_count = 0
         self.progress_file = Path("progress.txt")
         self.last_id = self.load_progress()
         self.download_folder = Path("downloads")
@@ -87,7 +84,7 @@ class Forwarder:
             f.write(str(msg_id))
     
     async def download_media_with_retry(self, msg, max_retries=3):
-        """Download media with retry logic"""
+        """Download media with retry"""
         for attempt in range(max_retries):
             try:
                 path = await self.client.download_media(
@@ -97,14 +94,16 @@ class Forwarder:
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     return path
                 elif path:
-                    os.remove(path)
+                    try:
+                        os.remove(path)
+                    except:
+                        pass
             except Exception as e:
                 logger.warning(f"Download attempt {attempt+1} failed: {e}")
                 await asyncio.sleep(2)
         return None
     
     def get_caption(self, msg):
-        """Get caption/text from message"""
         if msg.text:
             return msg.text
         if msg.media and hasattr(msg.media, 'caption'):
@@ -112,9 +111,9 @@ class Forwarder:
         return ""
     
     async def copy_message(self, msg):
-        """Copy message - handles ALL types"""
+        """Copy message - all types"""
         try:
-            # --- 1. TEXT MESSAGE ---
+            # --- TEXT ---
             if not msg.media:
                 await self.client.send_message(
                     self.dest,
@@ -128,12 +127,11 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Text)")
                 return True
             
-            # --- 2. POLL ---
+            # --- POLL ---
             if isinstance(msg.media, MessageMediaPoll):
                 poll = msg.media.poll
-                question = poll.question
                 answers = "\n".join([f"• {a.text}" for a in poll.answers])
-                text = f"📊 POLL\nQuestion: {question}\n\n{answers}"
+                text = f"📊 POLL\nQuestion: {poll.question}\n\n{answers}"
                 await self.client.send_message(self.dest, text)
                 self.copied += 1
                 self.last_id = msg.id
@@ -141,7 +139,7 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Poll)")
                 return True
             
-            # --- 3. CONTACT ---
+            # --- CONTACT ---
             if isinstance(msg.media, MessageMediaContact):
                 contact = msg.media
                 text = f"👤 CONTACT\nName: {contact.first_name} {contact.last_name or ''}\nPhone: {contact.phone_number}"
@@ -152,7 +150,7 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Contact)")
                 return True
             
-            # --- 4. LOCATION / VENUE ---
+            # --- LOCATION ---
             if isinstance(msg.media, MessageMediaGeo) or isinstance(msg.media, MessageMediaVenue):
                 geo = msg.media
                 if isinstance(geo, MessageMediaVenue):
@@ -166,7 +164,7 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Location)")
                 return True
             
-            # --- 5. GAME ---
+            # --- GAME ---
             if isinstance(msg.media, MessageMediaGame):
                 game = msg.media.game
                 text = f"🎮 GAME\n{game.title}\n{game.description}"
@@ -177,7 +175,7 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Game)")
                 return True
             
-            # --- 6. DICE ---
+            # --- DICE ---
             if isinstance(msg.media, MessageMediaDice):
                 dice = msg.media
                 emojis = {1: "🎲", 2: "🎯", 3: "🏀", 4: "⚽", 5: "🎳"}
@@ -189,59 +187,41 @@ class Forwarder:
                 logger.info(f"✅ {self.copied}: {msg.id} (Dice)")
                 return True
             
-            # --- 7. MEDIA (Photo, Video, Document, Voice, Sticker) ---
+            # --- MEDIA (Photo, Video, Document, Voice, Sticker) ---
             if msg.media:
-                # Check if it's a sticker
-                is_sticker = False
-                if isinstance(msg.media, MessageMediaDocument):
-                    doc = msg.media.document
-                    if doc:
-                        for attr in doc.attributes:
-                            if isinstance(attr, DocumentAttributeSticker):
-                                is_sticker = True
-                                break
-                
-                # Download media
                 logger.info(f"📥 Downloading media: {msg.id}")
                 path = await self.download_media_with_retry(msg)
                 
                 if path and os.path.exists(path):
                     logger.info(f"📤 Uploading: {msg.id}")
-                    
-                    # Get caption
                     caption = self.get_caption(msg)
                     if len(caption) > 1000:
                         caption = caption[:997] + "..."
                     
-                    # Send file
                     await self.client.send_file(
                         self.dest,
                         path,
                         caption=caption,
                         supports_streaming=True,
-                        force_document=is_sticker,  # Stickers as document if needed
+                        force_document=False,
                         reply_to=msg.reply_to_msg_id if msg.is_reply else None
                     )
                     
-                    # Clean up
                     try:
                         os.remove(path)
                     except:
                         pass
                     
-                    self.media_count += 1
                     self.copied += 1
                     self.last_id = msg.id
                     self.save_progress(msg.id)
-                    logger.info(f"✅ {self.copied}: {msg.id} (Media #{self.media_count})")
+                    logger.info(f"✅ {self.copied}: {msg.id} (Media)")
                     return True
                 else:
                     logger.warning(f"⚠️ Download failed: {msg.id}")
                     self.skipped += 1
                     return False
             
-            # --- 8. UNKNOWN ---
-            logger.warning(f"⚠️ Unknown message type: {msg.id}")
             self.skipped += 1
             return False
             
@@ -255,18 +235,15 @@ class Forwarder:
             return False
     
     async def run(self):
-        """Main loop"""
         await self.client.start()
         
         logger.info("=" * 60)
-        logger.info(f"📤 Source (Private): {self.source}")
+        logger.info(f"📤 Source: {self.source}")
         logger.info(f"📥 Destination: {self.dest}")
-        logger.info(f"📌 Resuming from ID: {self.last_id}")
-        logger.info(f"⏱️ Delay: {self.delay}s")
+        logger.info(f"📌 Resuming from: {self.last_id}")
         logger.info("=" * 60)
         
         offset = self.last_id
-        batch_num = 0
         
         while True:
             try:
@@ -282,8 +259,7 @@ class Forwarder:
                     await asyncio.sleep(60)
                     continue
                 
-                batch_num += 1
-                logger.info(f"📦 Batch {batch_num}: {len(messages)} messages")
+                logger.info(f"📦 {len(messages)} messages fetched")
                 
                 for msg in messages:
                     if msg.id <= self.last_id:
