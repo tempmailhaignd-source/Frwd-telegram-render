@@ -2,26 +2,26 @@ services:
   - type: web
     name: telegram-forwarder
     env: python
-    buildCommand: chmod +x setup_render.sh && ./setup_render.sh && pip install -r requirements.txt
-    startCommand: python main.py
+    region: oregon
+    plan: free
+    
+    # Python version set karo
+    python:
+      version: 3.12
+    
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "true"
-      - key: PORT
-        value: "10000"
-      # Keep logs in memory only since Render's filesystem is ephemeral
-      - key: LOG_LEVEL
-        value: "INFO"
-      # You'll need to add these in the Render dashboard as secrets
-      # - key: API_ID
-      #   sync: false
-      # - key: API_HASH
-      #   sync: false
-      # - key: SOURCE_CHANNEL
-      #   sync: false
-      # - key: DESTINATION_CHANNEL
-      #   sync: false
-      # - key: SESSION_STRING
-      #   sync: false
-    autoDeploy: true
-    healthCheckPath: /status
+      - key: API_ID
+        value: 30622410
+      - key: API_HASH
+        value: ac0e642a6cf43ced04f3cc2eabf5a21d
+      - key: SOURCE_CHAT
+        value: -1003801298314
+      - key: DEST_CHAT
+        value: -1003882932953
+      - key: DELAY
+        value: 1.5
+      - key: PYTHON_VERSION
+        value: 3.12
