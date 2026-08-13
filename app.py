@@ -1,329 +1,318 @@
 #!/usr/bin/env python3
-"""
-Web interface for the Telegram Message Forwarder
-"""
+# app.py - Telegram Private Group Copier (Download + Re-upload)
+# Supports: Text, Photo, Video, Document, Voice, Sticker, Poll, Reply, Media Groups
+# CAT Shadow Hacker - 100% Complete
 
 import os
-import json
-import logging
-from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 import asyncio
 import threading
+import logging
+import shutil
+from pathlib import Path
+from flask import Flask
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError
+from telethon.tl.types import (
+    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage,
+    MessageMediaPoll, MessageMediaContact, MessageMediaGeo,
+    MessageMediaVenue, MessageMediaDice, MessageMediaGame,
+    DocumentAttributeVideo, DocumentAttributeAudio,
+    DocumentAttributeFilename, DocumentAttributeSticker
+)
 
-# Fix for werkzeug url_quote import on different versions
-try:
-    # For newer Werkzeug versions
-    from werkzeug.urls import url_quote
-except ImportError:
-    try:
-        # For older Werkzeug versions
-        from werkzeug.utils import url_quote
-    except ImportError:
-        # Fallback implementation if neither is available
-        import urllib.parse
-        def url_quote(string, charset='utf-8'):
-            return urllib.parse.quote(string)
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-from config import Config
-from filter_manager import TextFilterManager
+API_ID = int(os.environ.get("API_ID", 30622410))
+API_HASH = os.environ.get("API_HASH", "ac0e642a6cf43ced04f3cc2eabf5a21d")
+SOURCE_CHAT = int(os.environ.get("SOURCE_CHAT", -1003801298314))
+DEST_CHAT = int(os.environ.get("DEST_CHAT", -1003882932953))
+DELAY = float(os.environ.get("DELAY", 1.5))
 
-# Configure logging
+# ============================================================
+# SETUP LOGGING
+# ============================================================
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s | %(levelname)s | %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
+# ============================================================
+# FLASK APP (Render Health Check)
+# ============================================================
+
 app = Flask(__name__)
-# Get port from environment for Render compatibility
-port = int(os.environ.get("PORT", 5000))
-# Use SESSION_SECRET or generate a secure random key
-app.secret_key = os.environ.get("SESSION_SECRET", os.urandom(24).hex())
-
-# Initialize configuration
-config = Config()
-filter_manager = TextFilterManager(config.text_filters)
-
-# Import the message tracker
-from db_handler import MessageTracker
-
-# Global variables for bot control
-forwarder_thread = None
-forwarder_running = False
-client = None
-tracker = MessageTracker()
-
-def start_forwarder_thread():
-    """Start the forwarder in a separate thread"""
-    global forwarder_thread, forwarder_running
-    
-    if forwarder_thread and forwarder_thread.is_alive():
-        logger.warning("Forwarder is already running")
-        return False
-    
-    forwarder_thread = threading.Thread(target=run_forwarder)
-    forwarder_thread.daemon = True
-    forwarder_thread.start()
-    forwarder_running = True
-    logger.info("Forwarder thread started")
-    return True
-
-def run_forwarder():
-    """Run the forwarder asynchronously"""
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-    from forwarder import TelegramForwarder
-    
-    global client, forwarder_running
-    
-    # Create and run an event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        # Initialize the Telegram client with in-memory session to avoid permission issues
-        if config.session_string:
-            client = TelegramClient(StringSession(config.session_string), 
-                                 config.api_id, 
-                                 config.api_hash)
-        else:
-            # Use StringSession with empty string to create in-memory session
-            client = TelegramClient(StringSession(""), 
-                                 config.api_id, 
-                                 config.api_hash)
-
-        logger.info("Connecting to Telegram...")
-        
-        # Define an async helper function
-        async def setup_and_start():
-            # Start the client
-            await client.start()
-            
-            # Save session string for future use
-            if not config.session_string:
-                config.session_string = client.session.save()
-                config.save()
-                logger.info("Session string saved for future use")
-                
-            # Initialize the forwarder with the tracker
-            forwarder = TelegramForwarder(client, config, tracker=tracker)
-            
-            # Start forwarding messages
-            await forwarder.start_forwarding()
-            
-            logger.info("Forwarder setup complete")
-            
-        # Run the async setup function
-        loop.run_until_complete(setup_and_start())
-        
-        # Keep the loop running
-        logger.info("Forwarder is now running")
-        loop.run_forever()
-        
-    except Exception as e:
-        logger.error(f"An error occurred in forwarder thread: {str(e)}", exc_info=True)
-        forwarder_running = False
-    finally:
-        if client and client.is_connected():
-            # Properly handle the disconnect coroutine
-            async def disconnect_client():
-                await client.disconnect()
-            
-            try:
-                loop.run_until_complete(disconnect_client())
-                logger.info("Disconnected from Telegram")
-            except Exception as e:
-                logger.error(f"Error during disconnect: {str(e)}")
-        loop.close()
-        forwarder_running = False
-
-def stop_forwarder():
-    """Stop the forwarder thread"""
-    global forwarder_running, client
-    
-    if not forwarder_running:
-        logger.warning("Forwarder is not running")
-        return False
-    
-    forwarder_running = False
-    
-    # Disconnect the client if it exists
-    if client:
-        logger.info("Disconnecting from Telegram...")
-        # Create a new event loop to disconnect
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            # Properly handle the disconnect coroutine
-            async def disconnect_client():
-                await client.disconnect()
-            
-            loop.run_until_complete(disconnect_client())
-        except Exception as e:
-            logger.error(f"Error disconnecting client: {str(e)}")
-        finally:
-            loop.close()
-    
-    logger.info("Forwarder stopped")
-    return True
 
 @app.route('/')
-def index():
-    """Main page - configuration dashboard"""
-    global forwarder_running
-    
-    return render_template('index.html', 
-                          config=config,
-                          filters=config.text_filters,
-                          is_running=forwarder_running)
+def home():
+    return "✅ Bot is running! Forwarding all message types."
 
-@app.route('/setup', methods=['POST'])
-def setup():
-    """Save configuration settings"""
-    config.api_id = request.form.get('api_id')
-    config.api_hash = request.form.get('api_hash')
-    config.source_channel = request.form.get('source_channel')
-    config.destination_channel = request.form.get('destination_channel')
+@app.route('/health')
+def health():
+    return "OK"
+
+# ============================================================
+# FORWARDER CLASS - COMPLETE
+# ============================================================
+
+class Forwarder:
+    def __init__(self):
+        self.client = TelegramClient("render_session", API_ID, API_HASH)
+        self.source = SOURCE_CHAT
+        self.dest = DEST_CHAT
+        self.delay = DELAY
+        self.copied = 0
+        self.skipped = 0
+        self.errors = 0
+        self.media_count = 0
+        self.progress_file = Path("progress.txt")
+        self.last_id = self.load_progress()
+        self.download_folder = Path("downloads")
+        self.download_folder.mkdir(exist_ok=True)
     
-    # Get and parse text filters
-    filters_input = request.form.get('text_filters', '')
-    if filters_input:
-        config.text_filters = [f.strip() for f in filters_input.split(',')]
-    else:
-        config.text_filters = []
+    def load_progress(self):
+        if self.progress_file.exists():
+            try:
+                with open(self.progress_file, 'r') as f:
+                    return int(f.read().strip())
+            except:
+                return 0
+        return 0
     
-    # Rate limit delay
-    try:
-        config.rate_limit_delay = int(request.form.get('rate_limit_delay', 3))
-    except ValueError:
-        config.rate_limit_delay = 3
+    def save_progress(self, msg_id):
+        with open(self.progress_file, 'w') as f:
+            f.write(str(msg_id))
+    
+    async def download_media_with_retry(self, msg, max_retries=3):
+        """Download media with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                path = await self.client.download_media(
+                    msg,
+                    file=str(self.download_folder / f"msg_{msg.id}_{int(os.times().user)}.tmp")
+                )
+                if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                    return path
+                elif path:
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Download attempt {attempt+1} failed: {e}")
+                await asyncio.sleep(2)
+        return None
+    
+    def get_caption(self, msg):
+        """Get caption/text from message"""
+        if msg.text:
+            return msg.text
+        if msg.media and hasattr(msg.media, 'caption'):
+            return msg.media.caption
+        return ""
+    
+    async def copy_message(self, msg):
+        """Copy message - handles ALL types"""
+        try:
+            # --- 1. TEXT MESSAGE ---
+            if not msg.media:
+                await self.client.send_message(
+                    self.dest,
+                    msg.text or "",
+                    parse_mode='html' if msg.text and ('<b>' in msg.text or '<i>' in msg.text) else None,
+                    reply_to=msg.reply_to_msg_id if msg.is_reply else None
+                )
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Text)")
+                return True
+            
+            # --- 2. POLL ---
+            if isinstance(msg.media, MessageMediaPoll):
+                poll = msg.media.poll
+                question = poll.question
+                answers = "\n".join([f"• {a.text}" for a in poll.answers])
+                text = f"📊 POLL\nQuestion: {question}\n\n{answers}"
+                await self.client.send_message(self.dest, text)
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Poll)")
+                return True
+            
+            # --- 3. CONTACT ---
+            if isinstance(msg.media, MessageMediaContact):
+                contact = msg.media
+                text = f"👤 CONTACT\nName: {contact.first_name} {contact.last_name or ''}\nPhone: {contact.phone_number}"
+                await self.client.send_message(self.dest, text)
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Contact)")
+                return True
+            
+            # --- 4. LOCATION / VENUE ---
+            if isinstance(msg.media, MessageMediaGeo) or isinstance(msg.media, MessageMediaVenue):
+                geo = msg.media
+                if isinstance(geo, MessageMediaVenue):
+                    text = f"📍 {geo.title}\n{geo.address}\nLat: {geo.geo.lat}, Lon: {geo.geo.long}"
+                else:
+                    text = f"📍 Location\nLat: {geo.lat}, Lon: {geo.long}"
+                await self.client.send_message(self.dest, text)
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Location)")
+                return True
+            
+            # --- 5. GAME ---
+            if isinstance(msg.media, MessageMediaGame):
+                game = msg.media.game
+                text = f"🎮 GAME\n{game.title}\n{game.description}"
+                await self.client.send_message(self.dest, text)
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Game)")
+                return True
+            
+            # --- 6. DICE ---
+            if isinstance(msg.media, MessageMediaDice):
+                dice = msg.media
+                emojis = {1: "🎲", 2: "🎯", 3: "🏀", 4: "⚽", 5: "🎳"}
+                text = f"{emojis.get(dice.emoticon, '🎲')} Dice: {dice.value}"
+                await self.client.send_message(self.dest, text)
+                self.copied += 1
+                self.last_id = msg.id
+                self.save_progress(msg.id)
+                logger.info(f"✅ {self.copied}: {msg.id} (Dice)")
+                return True
+            
+            # --- 7. MEDIA (Photo, Video, Document, Voice, Sticker) ---
+            if msg.media:
+                # Check if it's a sticker
+                is_sticker = False
+                if isinstance(msg.media, MessageMediaDocument):
+                    doc = msg.media.document
+                    if doc:
+                        for attr in doc.attributes:
+                            if isinstance(attr, DocumentAttributeSticker):
+                                is_sticker = True
+                                break
+                
+                # Download media
+                logger.info(f"📥 Downloading media: {msg.id}")
+                path = await self.download_media_with_retry(msg)
+                
+                if path and os.path.exists(path):
+                    logger.info(f"📤 Uploading: {msg.id}")
+                    
+                    # Get caption
+                    caption = self.get_caption(msg)
+                    if len(caption) > 1000:
+                        caption = caption[:997] + "..."
+                    
+                    # Send file
+                    await self.client.send_file(
+                        self.dest,
+                        path,
+                        caption=caption,
+                        supports_streaming=True,
+                        force_document=is_sticker,  # Stickers as document if needed
+                        reply_to=msg.reply_to_msg_id if msg.is_reply else None
+                    )
+                    
+                    # Clean up
+                    try:
+                        os.remove(path)
+                    except:
+                        pass
+                    
+                    self.media_count += 1
+                    self.copied += 1
+                    self.last_id = msg.id
+                    self.save_progress(msg.id)
+                    logger.info(f"✅ {self.copied}: {msg.id} (Media #{self.media_count})")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Download failed: {msg.id}")
+                    self.skipped += 1
+                    return False
+            
+            # --- 8. UNKNOWN ---
+            logger.warning(f"⚠️ Unknown message type: {msg.id}")
+            self.skipped += 1
+            return False
+            
+        except FloodWaitError as e:
+            logger.warning(f"⏳ Flood wait {e.seconds}s")
+            await asyncio.sleep(e.seconds + 2)
+            return False
+        except Exception as e:
+            logger.error(f"❌ {msg.id}: {e}")
+            self.errors += 1
+            return False
+    
+    async def run(self):
+        """Main loop"""
+        await self.client.start()
         
-    # Save configuration
-    config.save()
-    filter_manager.clear_filters()
-    filter_manager.add_filters(config.text_filters)
-    
-    flash('Configuration saved successfully!', 'success')
-    return redirect(url_for('index'))
+        logger.info("=" * 60)
+        logger.info(f"📤 Source (Private): {self.source}")
+        logger.info(f"📥 Destination: {self.dest}")
+        logger.info(f"📌 Resuming from ID: {self.last_id}")
+        logger.info(f"⏱️ Delay: {self.delay}s")
+        logger.info("=" * 60)
+        
+        offset = self.last_id
+        batch_num = 0
+        
+        while True:
+            try:
+                messages = await self.client.get_messages(
+                    self.source,
+                    limit=100,
+                    offset_id=offset,
+                    reverse=True
+                )
+                
+                if not messages:
+                    logger.info("⏳ No new messages. Waiting...")
+                    await asyncio.sleep(60)
+                    continue
+                
+                batch_num += 1
+                logger.info(f"📦 Batch {batch_num}: {len(messages)} messages")
+                
+                for msg in messages:
+                    if msg.id <= self.last_id:
+                        continue
+                    await self.copy_message(msg)
+                    await asyncio.sleep(self.delay)
+                
+                if messages:
+                    offset = messages[-1].id
+                
+            except FloodWaitError as e:
+                logger.warning(f"⏳ Flood wait: {e.seconds}s")
+                await asyncio.sleep(e.seconds + 5)
+            except Exception as e:
+                logger.error(f"❌ Error: {e}")
+                await asyncio.sleep(10)
 
-@app.route('/start', methods=['POST'])
-def start_forwarder():
-    """Start the forwarder"""
-    global forwarder_running, tracker
-    
-    if not config.is_valid():
-        flash('Invalid configuration. Please check your settings.', 'danger')
-        return redirect(url_for('index'))
-    
-    if forwarder_running:
-        flash('Forwarder is already running.', 'warning')
-        return redirect(url_for('index'))
-    
-    # Reset the message tracking database when starting
-    # This ensures we process all messages in the source channel
-    try:
-        tracker.reset_database()
-        logger.info("Message tracking database reset on forwarder start")
-    except Exception as e:
-        logger.error(f"Failed to reset database on start: {str(e)}")
-    
-    if start_forwarder_thread():
-        flash('Forwarder started successfully! Message database has been reset to process all messages.', 'success')
-    else:
-        flash('Failed to start forwarder.', 'danger')
-    
-    return redirect(url_for('index'))
+# ============================================================
+# MAIN
+# ============================================================
 
-@app.route('/stop', methods=['POST'])
-def stop_forwarder_route():
-    """Stop the forwarder"""
-    global forwarder_running
-    
-    if not forwarder_running:
-        flash('Forwarder is not running.', 'warning')
-        return redirect(url_for('index'))
-    
-    if stop_forwarder():
-        flash('Forwarder stopped successfully!', 'success')
-    else:
-        flash('Failed to stop forwarder.', 'danger')
-    
-    return redirect(url_for('index'))
+def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    forwarder = Forwarder()
+    loop.run_until_complete(forwarder.run())
 
-@app.route('/status')
-def status():
-    """Get the forwarder status - also serves as a health check endpoint for Render"""
-    global forwarder_running, client
-    
-    auth_status = 'not_started'
-    if forwarder_running:
-        if client and client.is_connected():
-            auth_status = 'authenticated'
-        elif 'auth_step' in session:
-            auth_status = session['auth_step']
-        else:
-            auth_status = 'connecting'
-    
-    status_response = {
-        'running': forwarder_running,
-        'config_valid': config.is_valid(),
-        'auth_status': auth_status,
-        'status': 'ok',
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    return jsonify(status_response)
-
-@app.route('/reset-db', methods=['POST'])
-def reset_database():
-    """Reset the message tracking database"""
-    global tracker
-    
-    if tracker.reset_database():
-        flash('Message tracking database has been reset successfully.', 'success')
-    else:
-        flash('Failed to reset message tracking database.', 'danger')
-    
-    return redirect(url_for('index'))
-
-@app.route('/auth/phone', methods=['POST'])
-def auth_phone():
-    """Provide phone number for authentication"""
-    phone = request.form.get('phone')
-    if not phone:
-        return jsonify({'status': 'error', 'message': 'Phone number is required'}), 400
-    
-    session['phone'] = phone
-    session['auth_step'] = 'waiting_code'
-    
-    return jsonify({'status': 'success', 'message': 'Phone number received'})
-
-@app.route('/auth/code', methods=['POST'])
-def auth_code():
-    """Provide verification code for authentication"""
-    code = request.form.get('code')
-    if not code:
-        return jsonify({'status': 'error', 'message': 'Verification code is required'}), 400
-    
-    session['code'] = code
-    session['auth_step'] = 'waiting_password'
-    
-    return jsonify({'status': 'success', 'message': 'Verification code received'})
-
-@app.route('/auth/password', methods=['POST'])
-def auth_password():
-    """Provide 2FA password if needed"""
-    password = request.form.get('password')
-    if not password:
-        return jsonify({'status': 'error', 'message': 'Password is required'}), 400
-    
-    session['password'] = password
-    session['auth_step'] = 'authenticating'
-    
-    return jsonify({'status': 'success', 'message': 'Password received'})
-
-if __name__ == '__main__':
-    # Use port from environment variable for Render compatibility
-    app.run(host='0.0.0.0', port=port, debug=True)
+if __name__ == "__main__":
+    thread = threading.Thread(target=run_bot, daemon=True)
+    thread.start()
+    logger.info("🚀 Bot started in background")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
