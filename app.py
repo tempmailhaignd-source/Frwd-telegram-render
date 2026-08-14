@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# app.py - DEBUG MODE (Har message ka type dikhega)
+# app.py - FINAL FIXED (Sab aayega - Video, Photo, Document, Web Page)
 # CAT Shadow Hacker
 
 import os
@@ -16,7 +16,8 @@ from telethon.tl.types import (
     MessageMediaPoll, MessageMediaContact, MessageMediaGeo,
     MessageMediaVenue, MessageMediaDice, MessageMediaGame,
     DocumentAttributeFilename, DocumentAttributeVideo,
-    DocumentAttributeAudio, DocumentAttributeSticker
+    DocumentAttributeAudio, DocumentAttributeSticker,
+    WebPageEmpty
 )
 
 # ============================================================
@@ -28,8 +29,8 @@ API_HASH = "ac0e642a6cf43ced04f3cc2eabf5a21d"
 SOURCE = -1003801298314
 DEST = -1003882932953
 DELAY = 1.5
-PARALLEL = 1  # DEBUG ke liye 1 rakho
-MAX_RETRIES = 2
+PARALLEL = 2
+MAX_RETRIES = 3
 
 SESSION_STRING = "1BVtsOHoBu5FHvTd_gQBWx_41G-zbF_5Xc8iUCgphoZHz0PuzvL_HiS4mGJwK_8_QeUivqGJV7ghLyTNIW5FICnttX8aWdY8K3MF2NLza708E5SliPbWfZG3e0kMScesvRz8c1c2Mxl7JQDFY-baOFG5bF-zEU4PfaGOErtTdm-iMD_3LSwQbyqeP3HguPKy7WvtA-5F9Ycz82hM0kd2GsTdQfFD236D11einxiRIApq29qzVT8Lxiec3bKD9h2oyNhAGh4FcLwAGCVmnHmQ2WFMYgT97TGZAXSYncThQXhPibxv8p_eV1Go5WwFaHmaM9avj-BKBrp9qHhlvyBX0tAFTW6DgeG0="
 
@@ -40,17 +41,17 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ DEBUG Mode"
+    return "✅ FINAL FIXED - Sab aayega"
 
 @app.route('/health')
 def health():
     return "OK"
 
 # ============================================================
-# DEBUG COPIER
+# FINAL COPIER
 # ============================================================
 
-class DebugCopier:
+class FinalCopier:
     def __init__(self):
         self.client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
         self.source = SOURCE
@@ -67,7 +68,7 @@ class DebugCopier:
         self.download_folder = Path("downloads")
         self.download_folder.mkdir(exist_ok=True)
         
-        self.progress_file = Path("progress_debug.json")
+        self.progress_file = Path("progress_final.json")
         self.load_progress()
     
     def load_progress(self):
@@ -97,7 +98,6 @@ class DebugCopier:
             pass
     
     def get_message_type(self, msg):
-        """Detect exact message type"""
         if not msg.media:
             return "Text"
         
@@ -109,7 +109,6 @@ class DebugCopier:
         if isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
-                # Check for sticker
                 for attr in doc.attributes:
                     if isinstance(attr, DocumentAttributeSticker):
                         return "Sticker"
@@ -126,12 +125,12 @@ class DebugCopier:
                     elif 'image' in doc.mime_type:
                         return "Image"
                     else:
-                        return f"Document ({doc.mime_type})"
+                        return "Document"
                 return "Document"
-            return "Document (No doc)"
+            return "Document"
         
         if isinstance(media, MessageMediaWebPage):
-            return "Web Page"
+            return "WebPage"
         if isinstance(media, MessageMediaPoll):
             return "Poll"
         if isinstance(media, MessageMediaContact):
@@ -145,7 +144,18 @@ class DebugCopier:
         if isinstance(media, MessageMediaGame):
             return "Game"
         
-        return f"Unknown: {type(media).__name__}"
+        return f"Unknown"
+    
+    def get_filename(self, msg):
+        if not msg.media or not isinstance(msg.media, MessageMediaDocument):
+            return None
+        doc = msg.media.document
+        if not doc:
+            return None
+        for attr in doc.attributes:
+            if isinstance(attr, DocumentAttributeFilename):
+                return attr.file_name
+        return None
     
     async def download_with_retry(self, msg, retries=3):
         for attempt in range(retries):
@@ -166,25 +176,13 @@ class DebugCopier:
                 await asyncio.sleep(2)
         return None
     
-    def get_filename(self, msg):
-        if not msg.media or not isinstance(msg.media, MessageMediaDocument):
-            return None
-        doc = msg.media.document
-        if not doc:
-            return None
-        for attr in doc.attributes:
-            if isinstance(attr, DocumentAttributeFilename):
-                return attr.file_name
-        return None
-    
     async def copy_one(self, msg):
         async with self.semaphore:
             if msg.id in self.processed_ids:
                 return True
             
-            # 🔍 DEBUG: Print message type
             msg_type = self.get_message_type(msg)
-            logger.info(f"🔍 {msg.id}: TYPE = {msg_type}")
+            logger.info(f"🔍 {msg.id}: {msg_type}")
             
             for attempt in range(self.max_retries):
                 try:
@@ -239,7 +237,7 @@ class DebugCopier:
                                 self.dest,
                                 path,
                                 caption=msg.text or "",
-                                voice_note=True if 'voice' in str(msg.media.document.mime_type) else False
+                                voice_note=True if msg.media.document and msg.media.document.mime_type and 'voice' in msg.media.document.mime_type else False
                             )
                             os.remove(path)
                             self.copied += 1
@@ -262,8 +260,8 @@ class DebugCopier:
                             return True
                         continue
                     
-                    # --- DOCUMENT / IMAGE / OTHER ---
-                    if "Document" in msg_type or msg_type == "Image":
+                    # --- DOCUMENT / IMAGE ---
+                    if msg_type in ["Document", "Image"]:
                         filename = self.get_filename(msg) or f"file_{msg.id}.bin"
                         path = await self.download_with_retry(msg)
                         if path:
@@ -280,6 +278,24 @@ class DebugCopier:
                             logger.info(f"✅ {self.copied}: {msg.id} ({msg_type}: {filename})")
                             return True
                         continue
+                    
+                    # --- WEB PAGE (FIXED) ---
+                    if msg_type == "WebPage":
+                        webpage = msg.media.webpage
+                        if webpage and not isinstance(webpage, WebPageEmpty):
+                            title = getattr(webpage, 'title', 'Link')
+                            description = getattr(webpage, 'description', '')
+                            url = getattr(webpage, 'url', '')
+                            text = f"🔗 {title}\n{description}\n{url}"
+                        else:
+                            # Fallback: send URL from message text
+                            text = msg.text or "🔗 Web Page (link only)"
+                        await self.client.send_message(self.dest, text)
+                        self.copied += 1
+                        self.processed_ids.add(msg.id)
+                        self.save_progress()
+                        logger.info(f"✅ {self.copied}: {msg.id} (Web Page)")
+                        return True
                     
                     # --- POLL ---
                     if msg_type == "Poll":
@@ -305,7 +321,7 @@ class DebugCopier:
                         return True
                     
                     # --- LOCATION / VENUE ---
-                    if msg_type == "Location" or msg_type == "Venue":
+                    if msg_type in ["Location", "Venue"]:
                         geo = msg.media
                         if msg_type == "Venue":
                             text = f"📍 {geo.title}\n{geo.address}\nLat: {geo.geo.lat}, Lon: {geo.geo.long}"
@@ -341,20 +357,8 @@ class DebugCopier:
                         logger.info(f"✅ {self.copied}: {msg.id} (Dice)")
                         return True
                     
-                    # --- WEB PAGE ---
-                    if msg_type == "Web Page":
-                        webpage = msg.media.webpage
-                        if webpage:
-                            text = f"🔗 {webpage.title or 'Link'}\n{webpage.description or ''}\n{webpage.url or ''}"
-                            await self.client.send_message(self.dest, text)
-                            self.copied += 1
-                            self.processed_ids.add(msg.id)
-                            self.save_progress()
-                            logger.info(f"✅ {self.copied}: {msg.id} (Web Page)")
-                            return True
-                    
                     # --- UNKNOWN ---
-                    logger.warning(f"⚠️ Unknown type for {msg.id}: {msg_type}")
+                    logger.warning(f"⚠️ Unknown: {msg.id} ({msg_type})")
                     self.copied += 1
                     self.processed_ids.add(msg.id)
                     self.save_progress()
@@ -376,9 +380,8 @@ class DebugCopier:
         await self.client.start()
         
         logger.info("=" * 60)
-        logger.info("🔍 DEBUG MODE - Har message ka type dikhega")
-        logger.info(f"📤 Source: {self.source}")
-        logger.info(f"📥 Destination: {self.dest}")
+        logger.info("📤 Source: {}".format(self.source))
+        logger.info("📥 Destination: {}".format(self.dest))
         logger.info("=" * 60)
         
         offset = 0
@@ -388,7 +391,7 @@ class DebugCopier:
             try:
                 messages = await self.client.get_messages(
                     self.source,
-                    limit=50,
+                    limit=100,
                     offset_id=offset,
                     reverse=True
                 )
@@ -400,15 +403,20 @@ class DebugCopier:
                 batch_num += 1
                 logger.info(f"📦 Batch {batch_num}: {len(messages)} messages")
                 
+                tasks = []
                 for msg in messages:
                     if msg.id in self.processed_ids:
                         continue
-                    await self.copy_one(msg)
-                    await asyncio.sleep(self.delay)
+                    tasks.append(self.copy_one(msg))
+                
+                if tasks:
+                    await asyncio.gather(*tasks)
                 
                 if messages:
                     offset = messages[-1].id
                     logger.info(f"📌 Offset: {offset} | Copied: {self.copied}")
+                
+                await asyncio.sleep(0.5)
                 
             except FloodWaitError as e:
                 logger.warning(f"⏳ Flood: {e.seconds}s")
@@ -416,6 +424,16 @@ class DebugCopier:
             except Exception as e:
                 logger.error(f"❌ Batch: {e}")
                 await asyncio.sleep(10)
+        
+        if self.failed:
+            logger.info(f"🔄 Retrying {len(self.failed)} failed...")
+            for msg_id in self.failed[:]:
+                try:
+                    msg = await self.client.get_messages(self.source, ids=msg_id)
+                    if msg:
+                        await self.copy_one(msg)
+                except:
+                    pass
         
         logger.info("=" * 60)
         logger.info(f"✅ Copied: {self.copied}")
@@ -431,15 +449,15 @@ class DebugCopier:
 if __name__ == "__main__":
     import threading
     
-    logger.info("🔑 Starting DEBUG Copier...")
+    logger.info("🔑 Starting FINAL COPIER...")
     
-    copier = DebugCopier()
+    copier = FinalCopier()
     
     def start_bot():
         asyncio.run(copier.run())
     
     thread = threading.Thread(target=start_bot, daemon=True)
     thread.start()
-    logger.info("🚀 DEBUG mode running - Check logs for message types")
+    logger.info("🚀 FINAL FIXED - Sab aayega!")
     
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
